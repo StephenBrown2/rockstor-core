@@ -13,6 +13,8 @@ PoolRemoveDisksComplete = RockstorWizardPage.extend({
                 html += '<div>Select disks to remove</div>';
             } else if (this.model.get('choice') == 'raid') {
                 html += '<div>Select RAID level and add disks</div>';
+            } else if (this.model.get('choice') == 'replace') {
+                html += '<div>Select disk to remove</div><div>Select disk to add</div>';
             }
             return new Handlebars.SafeString(html);
         });

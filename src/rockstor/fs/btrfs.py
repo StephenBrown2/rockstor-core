@@ -2148,6 +2148,100 @@ def balance_status(pool):
     return stats
 
 
+def replace_disk_cmd(dev_id: str, new_disk: str, mnt_pt: str, failing: bool=False, force: bool=False):
+    cmd = ["btrfs", "replace", "start", dev_id, new_disk, mnt_pt]
+    # If the disk is failing and has lots of read errors,
+    # only read from srcdev if no other zero-defect mirror exists.
+    if failing:
+        cmd.insert(3, "-r")
+    if force:
+        cmd.insert(3, "-f")
+    logger.debug("Replace command ({}).".format(cmd))
+    return cmd
+
+
+@task()
+def start_replace(cmd: list[str]):
+    """
+    Simple named wrapper to run replace command via Huey with logging and possible
+    exception filtering in case we need to improve error messaging.
+    See: start_resize_pool as counterpart wrapper.
+
+    https://www.untangled.dev/2020/07/01/huey-minimal-task-queue-django/
+    "... avoid passing a Django model instance or queryset as parameter."
+    "Instead pass the object id, which is an int..."
+    and retrieve the Django object a-fresh in the task function.
+    :param cmd: btrfs replace start command in run_command() format (ie list).
+    :param cmd:
+    :return:
+    """
+    logger.debug("Replace disk command ({}).".format(cmd))
+    try:
+        run_command(cmd)
+    except CommandException as e:
+        # We may need additional exception filtering/altering here.
+        raise e
+
+
+def replace_status(pool):
+    """
+    Wrapper around btrfs replace status pool_mount_point to extract info about
+    the current status of a replace.
+    :param pool: pool object to query
+    :return: dictionary containing parsed info about the balance status,
+    ie indexed by 'status' and 'percent_done'.
+    """
+    stats = {"status": "unknown"}
+    # The balance status of an umounted pool is undetermined / unknown, ie it
+    # could still be mid balance: our balance status command requires a
+    # relevant active mount path.
+    # Note that if we silently fail through the mount confirmation then our
+    # balance status will reflect the system pool balance status.
+    try:
+        mnt_pt = mount_root(pool)
+    except Exception as e:
+        logger.error(
+            "Exception while refreshing replace status for Pool({}). "
+            'Returning "unknown": {}'.format(pool.name, e.__str__())
+        )
+        return stats
+    out, err, rc = run_command([BTRFS, "replace", "status", "-1", mnt_pt], throw=False)
+    if len(out) > 0:
+        if " done," in out[0]:
+            stats["status"] = "running"
+            parse = re.match(r"([0-9.]+)% done,")
+            percent_left = parse.group(1)
+            try:
+                stats["percent_done"] = int(percent_left) # Is actually a float
+            except:
+                pass
+        elif "canceled" in out[0]:
+            stats["status"] = "canceled"
+            pmatch = re.match("at ([0-9.]+)%")
+            if pmatch:
+                try:
+                    stats["percent_done"] = int(pmatch.group(1))
+                except:
+                    pass
+        elif "finished" in out[0]:
+            stats["status"] = "finished"
+            stats["percent_done"] = 100
+
+        errs = re.match(r"([0-9]+) write errs, +([0-9]+) uncorr. read errs")
+        if errs:
+            write_errs, read_errs = parse.group(1, 2)
+            try:
+                stats["write_errs"] = int(write_errs)
+            except:
+                pass
+            try:
+                stats["read_errs"] = int(read_errs)
+            except:
+                pass
+
+    return stats
+
+
 def get_devid_usage(mnt_pt):
     """
     Extracts device usage information for a given mount point; includes
